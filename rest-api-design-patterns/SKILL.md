@@ -24,6 +24,28 @@ REST is not CRUD over HTTP. The hard parts are never the happy-path `GET /posts/
 
 **Step 3: Enforce idempotency for non-safe operations.** Require `Idempotency-Key` header on `POST`, `PUT`, `PATCH`, and `DELETE`. Store the key + response for 24 hours. On duplicate key, return the stored response (not a 409). The first request processes normally; retries within the window return the original result. This is non-negotiable for payment, transfer, and order-creation endpoints. Use UUID for the key format; let clients generate it, never the server.
 
+**GOOD:**
+```python
+# RFC 7807 Problem Details — machine-parseable, documents the error type
+def handle_transfer(amount: Decimal):
+    if balance < amount:
+        return {
+            "type": "https://api.example.com/errors/insufficient-funds",
+            "title": "Insufficient Funds",
+            "status": 422,
+            "detail": f"Balance {balance:.2f} below required {amount:.2f}",
+            "instance": f"/transfers/{transfer_id}",
+        }, 422
+```
+
+**BAD:**
+```python
+# String error with 200 status — clients must parse body, caches treat it as success
+def handle_transfer(amount: Decimal):
+    if balance < amount:
+        return {"error": "Not enough money"}, 200  # 200 with error in body: see no evil
+```
+
 ## Quick Reference
 
 | Scenario | Action |
@@ -40,6 +62,11 @@ REST is not CRUD over HTTP. The hard parts are never the happy-path `GET /posts/
 | `GET /posts?page=1&size=20` with no consistent ordering | Add explicit `ORDER BY id DESC` or `created_at DESC` — without it, page boundaries drift across requests |
 | Returning 200 with `{ "success": false }` in the body | Use HTTP status codes. Return `4xx`/`5xx`. Clients like caches and proxies make decisions based on status codes, not body parsing. |
 | Nesting related data 5 levels deep by default | Use sparse fieldsets (`?fields=id,title,author.name`) or `include` params. Deep nesting is the slowest path to a broken API contract. |
+
+### Anti-Patterns — Reject on Sight
+- `GET /posts?page=1&size=20` without explicit `ORDER BY` — without a deterministic sort order, the same query returns different results across requests as rows shift between pages
+- Returning `200 OK` with `{ "success": false, "error": "some message" }` in the body — HTTP status codes are the contract; returning 200 for failures breaks every proxy, cache, and client that checks status codes
+- No `Idempotency-Key` on `POST /orders` or `POST /payments` — a network retry on a payment endpoint without idempotency guarantees double charges; this is not a "nice to have"
 
 ## Red Flags
 - More than 2 pagination styles in the same API — clients have to learn both; they won't

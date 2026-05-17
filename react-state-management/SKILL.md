@@ -27,6 +27,33 @@ Server state → React Query (TanStack Query). It handles cache invalidation, ba
 ### Step 3: Avoid the Context Trap
 Context triggers re-render of every consumer when any value changes. Never put high-frequency state (input values, cursor position) in context. Split read-only auth context from mutable UI context. If you have 5+ context providers, you have a state management problem.
 
+**GOOD:**
+```tsx
+// Zustand store with explicit selectors — components only re-render on consumed slices
+const useStore = create<StoreState>()((set) => ({
+  bears: 0,
+  fishes: 0,
+  addBear: () => set((state) => ({ bears: state.bears + 1 })),
+  eatFish: () => set((state) => ({ fishes: state.fishes - 1 })),
+}));
+
+function BearCounter() {
+  const bears = useStore((state) => state.bears);
+  return <div>{bears}</div>;
+}
+```
+
+**BAD:**
+```tsx
+// Context that holds all state — every consumer re-renders when any value changes
+const AppContext = createContext({ bears: 0, fishes: 0 });
+
+function BearCounter() {
+  const { bears } = useContext(AppContext); // re-renders when fishes changes too
+  return <div>{bears}</div>;
+}
+```
+
 ## Quick Reference
 
 | Scenario | Tool |
@@ -44,6 +71,11 @@ Context triggers re-render of every consumer when any value changes. Never put h
 | Putting server data in Redux | Use React Query; server state is not client state |
 | One giant context for everything | Split into focused contexts or switch to Zustand |
 | useEffect to sync derived state | Compute it during render: `const total = items.reduce(...)` |
+
+### Anti-Patterns — Reject on Sight
+- `setState(largeObject)` in a context value without `useMemo` — creates a new object reference every render, cascading re-renders through every consumer even if no data changed
+- `useEffect` + `setState` to synchronize two state variables — derived state must be computed during render, not synchronized after the fact; leads to infinite loops when dependencies are wrong
+- One giant Redux store for colocated UI state like "isModalOpen" — server state and ephemeral UI state should not share the same store; you lose the benefits of targeted re-renders
 
 ## Red Flags
 - More than 3 useState variables tracking the same entity — extract a reducer

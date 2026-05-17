@@ -37,6 +37,26 @@ Use `setuptools` for packages with C extensions, `hatchling` (default build back
 ### Step 3: Organize by Feature, Not Layer
 Top-level packages by domain: `src/myapp/users/`, `src/myapp/orders/`. Inside each: `__init__.py` re-exports the public API. Internal modules prefixed with `_` for explicit privacy. Cross-cutting concerns (logging, config) get their own top-level package. Never `from module import *`; always import modules, not objects.
 
+**GOOD:**
+```python
+# src/myapp/users/core.py
+from myapp.database import get_session  # explicit import, follows the package path
+from myapp.users.models import User
+
+def list_users() -> list[User]:
+    session = get_session()
+    return session.query(User).all()
+```
+
+**BAD:**
+```python
+# sys.path hack to make imports work — breaks in CI and after pip install
+import sys
+sys.path.insert(0, "..")                     # relative path hack — fragile, non-reproducible
+from models import User                      # ambiguous import — where does "models" come from?
+from src.myapp.myapp.core import something   # package name duplicated — layout is broken
+```
+
 ## Quick Reference
 
 | Scenario | Tool |
@@ -55,6 +75,11 @@ Top-level packages by domain: `src/myapp/users/`, `src/myapp/orders/`. Inside ea
 | `__init__.py` full of logic | Re-export only; logic goes in private modules |
 | Circular imports between modules | Extract shared interface to `_types.py` or use late import |
 | `*` in `__init__.py` | Explicit `__all__` list; one export per line |
+
+### Anti-Patterns — Reject on Sight
+- `sys.path.insert(0, '..')` in any test or source file — this is a packaging failure, not a workaround; it works on the developer's machine and nowhere else; use `pip install -e .[dev]` instead
+- Import path that duplicates the package name: `from myapp.myapp.core import something` — the package name appears twice in the import path, indicating a broken `src` layout or a nested package mistake
+- `requirements.txt` with zero version pins — every `pip install` produces a different environment; pin at least the major version: `requests>=2.28,<3`
 
 ## Red Flags
 - `sys.path` manipulation anywhere in source or tests — broken packaging

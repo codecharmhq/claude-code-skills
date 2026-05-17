@@ -32,6 +32,40 @@ Identify boundaries: external calls (APIs, databases), user input, file I/O, and
 ### Step 3: Add Context at Every Layer
 Wrap errors with stack trace, request ID, user context (not PII), and what was being attempted. Structured error types enable callers to handle specific cases without string parsing.
 
+**GOOD:**
+```python
+class InsufficientFundsError(APIError):
+    def __init__(self, balance: float, required: float):
+        self.balance = balance
+        self.required = required
+        super().__init__(
+            status_code=422,
+            detail=f"Balance {balance:.2f} below required {required:.2f}",
+            error_type="insufficient_funds",
+        )
+
+# Caller can branch on error type, not parse strings
+try:
+    process_payment(amount)
+except InsufficientFundsError as e:
+    return {"error": "insufficient_funds", "balance": e.balance}, 422
+```
+
+**BAD:**
+```python
+def process_payment(amount):
+    if balance < amount:
+        raise Exception("Not enough money")  # Generic Exception — caller can't distinguish this from a DB failure
+
+try:
+    process_payment(amount)
+except Exception as e:
+    # Must parse the string to know what happened — breaks when message is translated or reworded
+    if "enough" in str(e):
+        return {"error": "insufficient_funds"}, 422
+    return {"error": "unknown"}, 500
+```
+
 ## Quick Reference
 
 | Scenario | Pattern |
@@ -49,6 +83,11 @@ Wrap errors with stack trace, request ID, user context (not PII), and what was b
 | Catching Exception/Pokemon | Catch specific exception types only |
 | Logging then rethrowing | Let the top-level handler log once |
 | Exposing internals to users | Map to user-friendly messages, log the details |
+
+### Anti-Patterns — Reject on Sight
+- `except Exception: pass` — silently swallows every failure including `KeyboardInterrupt` and `SystemExit`; even a log line is infinitely better than silence
+- `raise Exception("some message")` without a custom exception type — callers must parse string messages to distinguish error types; any refactor of the message text silently breaks error handling
+- Retry loop without exponential backoff and jitter — sleeping a fixed 1 second between retries is a thundering herd attack on your own downstream services
 
 ## Red Flags
 - Catch blocks with no body or a comment like "shouldn't happen"

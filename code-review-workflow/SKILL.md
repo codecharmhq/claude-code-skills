@@ -27,6 +27,21 @@ Check in order: security (injection, auth, data exposure), correctness (edge cas
 ### Step 3: Give Constructive Feedback
 Be specific: "This loop runs O(n^2) — suggest using a Set" not "This is slow." Ask questions instead of demands: "What happens when the list is empty?" Praise good solutions: "Nice use of early return here." Approve only when all concerns are addressed.
 
+**GOOD:**
+```typescript
+// Reviewer feedback: specific, actionable, explains the "why"
+// "This loop builds a new array on every iteration (O(n^2)).
+//  Consider using a Set for O(1) lookups:
+//  const seen = new Set(); items.filter(item => !seen.has(item.id) && seen.add(item.id))"
+```
+
+**BAD:**
+```typescript
+// Reviewer feedback: vague, personal, doesn't help the author improve
+// "This is slow. Please fix."  — not specific; doesn't say what's slow or how to fix it
+// "You wrote this wrong again." — attacks the person, not the code
+```
+
 ## Quick Reference
 
 | Scenario | Action |
@@ -42,6 +57,11 @@ Be specific: "This loop runs O(n^2) — suggest using a Set" not "This is slow."
 | Nitpicking style that passes linter | Trust automated tools, focus on substance |
 | Approving without understanding | Ask questions until the logic is clear |
 | Reviewing too fast | Go file by file, don't skim |
+
+### Anti-Patterns — Reject on Sight
+- Leaving a comment that says only "Fix this" or "This is wrong" — provides no context about what's wrong or why; the author must guess or chase you for clarification
+- Approving a PR with unresolved security concerns (injection, hardcoded secrets, missing auth checks) — a security issue is a blocking concern, not a suggestion
+- Rubber-stamping PRs without reading the diff — if you're approving more than 90% of PRs without comments, you're not reviewing; you're signing off
 
 ## Red Flags
 - PR has no tests but adds business logic — request tests before approving

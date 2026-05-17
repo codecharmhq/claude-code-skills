@@ -27,6 +27,44 @@ Route Handlers are NOT cached by default in production — unlike `fetch` in Ser
 ### Step 3: Centralize Auth in Middleware
 Check session/token in `middleware.ts` for broad route protection. Use a shared `auth()` helper imported into individual route handlers for fine-grained checks. Never inline `cookies().get('token')` in individual routes — it's the #1 source of auth drift across endpoints.
 
+**GOOD:**
+```typescript
+// src/lib/auth.ts — shared auth helper, single source of truth
+export async function getUser(): Promise<User | null> {
+  const session = await cookies().get("session");
+  if (!session) return null;
+  return db.user.findUnique({ where: { sessionId: session.value } });
+}
+
+// src/app/api/posts/route.ts — route handler uses the helper
+import { getUser } from "@/lib/auth";
+
+export async function GET() {
+  const user = await getUser();
+  if (!user) return Response.json({ error: "Unauthorized" }, { status: 401 });
+  const posts = await db.post.findMany({ where: { userId: user.id } });
+  return Response.json(posts);
+}
+```
+
+**BAD:**
+```typescript
+// Auth inline in every route handler — copy-pasted across 5+ files, easy to forget
+// route-one.ts
+export async function GET() {
+  const session = cookies().get("session"); // duplicated
+  if (!session) return Response.json({ error: "Unauthorized" }, { status: 401 });
+  // ...
+}
+
+// route-two.ts
+export async function GET() {
+  const session = cookies().get("session"); // duplicated again — slight variation in error message
+  if (!session) return new Response("Not allowed", { status: 403 }); // different status!
+  // ...
+}
+```
+
 ## Quick Reference
 
 | Scenario | Pattern |
@@ -45,6 +83,11 @@ Check session/token in `middleware.ts` for broad route protection. Use a shared 
 | Auth check copy-pasted across routes | Extract `auth()` helper; import everywhere |
 | `export const dynamic = 'auto'` and expecting fresh data | Set `'force-dynamic'` explicitly |
 | Edge runtime with Node.js-only packages | Move that logic to an external service or use Node.js runtime |
+
+### Anti-Patterns — Reject on Sight
+- Reading `request.body` twice in the same route handler — the request body is a one-shot stream; the second read returns an empty buffer; clone with `request.clone()` if you need multiple reads
+- Server Action that returns JSX or React components — Server Actions return serializable JSON data, not JSX; the return value is sent over the wire, not rendered on the server
+- `cookies()` or `headers()` called inside a `try/catch` block — these are dynamic functions that opt the route out of static generation; wrapping them in try/catch doesn't change that and makes debugging harder
 
 ## Red Flags
 - `cookies()` or `headers()` called inside a try/catch without being awaited — they're dynamic functions that opt the route out of static

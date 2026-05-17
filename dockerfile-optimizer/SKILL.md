@@ -27,6 +27,35 @@ Stage 1 (build): install compilers, build artifacts. Stage 2 (runtime): `COPY --
 ### Step 3: Harden the Runtime Image
 Pin base image to digest, not tag: `FROM node:20-alpine@sha256:abc...`. Run as non-root: `USER 1000`. Use `.dockerignore` to exclude `node_modules`, `.git`, `*.md`, `.env`. Set `HEALTHCHECK` in the Dockerfile. Never `COPY .` without a `.dockerignore` — you're shipping your entire dev environment including secrets and 2GB of build artifacts.
 
+**GOOD:**
+```dockerfile
+# Dependencies before source — cache hit on 99% of builds
+FROM node:20-alpine AS builder
+WORKDIR /app
+COPY package.json package-lock.json ./
+RUN npm ci --omit=dev
+COPY . .
+RUN npm run build
+
+FROM node:20-alpine
+WORKDIR /app
+COPY --from=builder /app/dist ./dist
+COPY --from=builder /app/node_modules ./node_modules
+USER 1000
+CMD ["node", "dist/server.js"]
+```
+
+**BAD:**
+```dockerfile
+# Source copied before dependencies — every code change redownloads all packages
+FROM node:20
+WORKDIR /app
+COPY . .                          # node_modules, .git, secrets — everything shipped
+RUN npm install                   # runs on every code change, not deterministic
+EXPOSE 3000
+CMD ["npm", "start"]
+```
+
 ## Quick Reference
 
 | Goal | Technique |
@@ -45,6 +74,11 @@ Pin base image to digest, not tag: `FROM node:20-alpine@sha256:abc...`. Run as n
 | `RUN apt-get upgrade` without cleanup | Chain: `apt-get update && apt-get install -y pkg && rm -rf /var/lib/apt/lists/*` |
 | `COPY . .` before `RUN npm ci` | Swap order; dependencies first, code second |
 | `ADD` instead of `COPY` | `COPY` is deterministic; `ADD` auto-extracts tarballs unpredictably |
+
+### Anti-Patterns — Reject on Sight
+- `RUN apt-get update` without `&& apt-get install` in the same `RUN` layer — the update cache is invalidated in the next layer, making the install fail with stale package lists; always chain them: `RUN apt-get update && apt-get install -y pkg && rm -rf /var/lib/apt/lists/*`
+- `COPY . .` without a `.dockerignore` file — ships `node_modules`, `.env`, `.git`, and all build artifacts into the image; a `.dockerignore` is non-negotiable for any production build
+- `apt-get upgrade` in a production Dockerfile — pulling arbitrary package upgrades breaks reproducibility; pin exact versions in the base image digest instead
 
 ## Red Flags
 - Image tag contains ":latest" — unpinned, builds are non-reproducible

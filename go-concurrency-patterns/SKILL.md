@@ -27,6 +27,47 @@ Shared mutable state with read/write contention → sync.Mutex or sync.RWMutex. 
 ### Step 3: Prevent Leaks
 Every goroutine must have a path to exit. Blocking on a channel send with no reader → leak. Blocking on a channel receive with no writer → leak. Use `select` with `ctx.Done()` on every blocking channel operation. Run tests with `-race` and `GODEBUG=gctrace=1`.
 
+**GOOD:**
+```go
+// errgroup with context — all goroutines cancelled on first error
+g, ctx := errgroup.WithContext(ctx)
+for _, url := range urls {
+    url := url
+    g.Go(func() error {
+        req, _ := http.NewRequestWithContext(ctx, "GET", url, nil)
+        resp, err := http.DefaultClient.Do(req)
+        if err != nil {
+            return fmt.Errorf("fetch %s: %w", url, err)
+        }
+        return resp.Body.Close()
+    })
+}
+if err := g.Wait(); err != nil {
+    return err
+}
+```
+
+**BAD:**
+```go
+// Goroutine with no cancellation — blocks forever if channel write never consumed
+func fetchAll(urls []string) error {
+    ch := make(chan error)
+    for _, url := range urls {
+        go func() {
+            resp, err := http.Get(url) // bug: uses loop variable, may be wrong url
+            ch <- err
+            resp.Body.Close()
+        }()
+    }
+    for range urls {
+        if err := <-ch; err != nil {
+            return err // leaks other goroutines — they keep running
+        }
+    }
+    return nil
+}
+```
+
 ## Quick Reference
 
 | Scenario | Primitive |
@@ -44,6 +85,11 @@ Every goroutine must have a path to exit. Blocking on a channel send with no rea
 | Goroutine using loop variable `i` | Pass as argument or copy: `i := i` before go func |
 | Channel never closed, range loops forever | Close from the sender, not the receiver |
 | WaitGroup.Add inside goroutine | Call Add before go func; otherwise counter may hit zero early |
+
+### Anti-Patterns — Reject on Sight
+- `go func()` with no `context.Context` parameter — the goroutine cannot be cancelled or timed out; it must run to completion or leak
+- Sending on an unbuffered channel outside a `select` with `ctx.Done()` — if no receiver is ready, the send blocks forever and the goroutine leaks
+- `sync.WaitGroup` with `Add()` called inside a goroutine that may not execute — if the goroutine is skipped, `Wait()` returns before all work is done; `Add` must be called before launching
 
 ## Red Flags
 - `go func()` with no context parameter — goroutine can't be cancelled

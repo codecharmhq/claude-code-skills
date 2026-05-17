@@ -27,6 +27,28 @@ When inference fails: use `NoInfer<T>` (TS 5.4+) to block inference on a paramet
 ### Step 3: Choose Between Overloads and Conditional Types
 Function overloads: when return type varies by literal input (`"GET"` → `GetResult`, `"POST"` → `PostResult`). Conditional types: when the mapping is mechanical and all callers know the input type. Generic + conditional: last resort; prefer overloads for public APIs.
 
+**GOOD:**
+```typescript
+// Constrained generic preserves input type — callers get autocomplete and type safety
+function getProperty<T, K extends keyof T>(obj: T, key: K): T[K] {
+  return obj[key];
+}
+
+const user = { id: 1, name: "Alice" };
+const name = getProperty(user, "name"); // type: string — correctly inferred
+```
+
+**BAD:**
+```typescript
+// Unconstrained generic with `as any` cast — defeats type checking entirely
+function getProperty(obj: any, key: string): any {
+  return obj[key]; // returns `any` — no safety, no autocomplete
+}
+
+const user = { id: 1, name: "Alice" };
+const name = getProperty(user, "name"); // type: any — no errors even for bad keys
+```
+
 ## Quick Reference
 
 | Scenario | Pattern |
@@ -45,6 +67,11 @@ Function overloads: when return type varies by literal input (`"GET"` → `GetRe
 | Conditional return type on generic | Overloads give better errors and autocomplete |
 | Forgetting `NoInfer` on a parameter | TypeScript infers `never` or widens to `unknown` |
 | `as` cast to satisfy generic | Fix the inference; the cast hides real errors |
+
+### Anti-Patterns — Reject on Sight
+- `as any` inside a generic function body — every `as any` is a hole in the type constraint, not a workaround; fix the constraint, not the body
+- Generic type parameter used exactly once in the signature — serves no purpose; either remove it or it should constrain something else
+- `T extends any` or `T extends unknown` as a constraint — both are no-ops that accept every type; use a real constraint like `T extends { id: string }` or remove the constraint entirely
 
 ## Red Flags
 - `as any` inside a generic function — the type parameter constraint is wrong
