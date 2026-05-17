@@ -46,6 +46,67 @@ Start with the WHERE clause columns in equality-filter order (= first, then rang
 | Index on `status` column with 3 values | Low cardinality = index ignored; use partial index or don't index |
 | Duplicate indexes: `(a, b)` and `(a)` | `(a, b)` covers queries on `a` alone; drop `(a)` unless it serves a unique constraint |
 
+## GOOD/BAD Patterns
+
+**GOOD:**
+```sql
+-- Composite index: equality columns first, range column last
+CREATE INDEX idx_users_org_created
+ON users (org_id, created_at DESC);
+-- Covers: WHERE org_id = ? ORDER BY created_at DESC
+```
+
+**BAD:**
+```sql
+-- Two single-column indexes — PostgreSQL uses only one per table scan; the other is wasted
+CREATE INDEX idx_users_org ON users (org_id);
+CREATE INDEX idx_users_created ON users (created_at);
+-- Query still does a Seq Scan or BitmapAnd
+```
+
+---
+
+**GOOD:**
+```sql
+-- Non-blocking index creation — application stays available
+CREATE INDEX CONCURRENTLY idx_orders_user_id
+ON orders (user_id, status);
+```
+
+**BAD:**
+```sql
+-- Blocking index creation — locks the table, blocks writes, causes downtime
+CREATE INDEX idx_orders_user_id
+ON orders (user_id);
+```
+
+---
+
+**GOOD:**
+```sql
+-- Partial index on low-cardinality column — tiny, fast, useful
+CREATE INDEX idx_orders_pending
+ON orders (created_at)
+WHERE status = 'pending';
+```
+
+**BAD:**
+```sql
+-- Full index on low-cardinality column — large, written on every update, rarely used
+CREATE INDEX idx_orders_status
+ON orders (status);
+-- status has 4 distinct values — optimizer ignores this index
+```
+
+### Anti-Patterns — Reject on Sight
+
+- `CREATE INDEX` on every foreign key column — index only FKs that are actually used in JOINs or WHERE clauses
+- `CREATE INDEX` on a boolean column — two values means the index has zero selectivity; the optimizer will Seq Scan anyway
+- Duplicate indexes where `(a, b)` and `(a)` both exist — `(a, b)` already covers queries filtering on `a` alone; drop `(a)` unless it enforces a unique constraint
+- `INCLUDE` clause missing on a covering index for high-selectivity queries — without `INCLUDE`, PostgreSQL must heap-lookup every matching row
+- Index on a column with `UPDATE` frequency > `SELECT` frequency — every UPDATE rewrites the index entry; write amplification with no read benefit
+- `pg_stat_user_indexes` shows `idx_scan = 0` for 30+ days — remove it; it's pure write tax with zero query benefit
+
 ## Red Flags
 - Index with 0 scans over 30 days — it's dead weight; remove it
 - `pg_stat_user_tables.n_tup_upd` >> `n_tup_hot_upd` — indexes prevent HOT updates; prune unused indexes

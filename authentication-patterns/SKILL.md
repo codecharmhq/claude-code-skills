@@ -24,6 +24,81 @@ Authentication is the highest-stakes code you write. The breach isn't from choos
 
 **Step 3: Secure the credential flow, not just the tokens.** Hash passwords with bcrypt (cost factor 12+) or argon2id. Rate-limit login: 5 attempts per account per 15 minutes, 20 attempts per IP per minute. Implement account locking with escalating delays (1s, 5s, 15s, 60s) not permanent lockout (denial-of-service vector). For OAuth2, validate `state` parameter on callback to prevent CSRF, and use PKCE for SPA/mobile flows.
 
+**GOOD:**
+```ts
+// httpOnly cookie + SameSite=Strict — XSS-proof token storage
+res.setHeader('Set-Cookie', [
+  `access_token=${accessToken}; HttpOnly; Secure; SameSite=Strict; Path=/; Max-Age=900`,
+  `refresh_token=${refreshToken}; HttpOnly; Secure; SameSite=Strict; Path=/api/auth; Max-Age=604800`,
+]);
+// JavaScript can NEVER read these tokens — XSS loses its prize.
+```
+
+**BAD:**
+```ts
+// JWT in localStorage — one XSS and every token is exfiltrated
+localStorage.setItem('access_token', accessToken);   // readable by ANY JS on the page
+localStorage.setItem('refresh_token', refreshToken);
+// A single compromised npm dependency with an XSS payload = all user sessions stolen.
+```
+
+**GOOD:**
+```ts
+// Refresh token rotation + reuse detection
+export async function rotateRefreshToken(oldToken: string) {
+  const family = await db.refreshToken.findUnique({ where: { token: oldToken } });
+  if (!family) throw new UnauthorizedError('Invalid token');
+  if (family.usedAt) {
+    // Replay attack detected — invalidate entire family
+    await db.refreshToken.updateMany({
+      where: { familyId: family.familyId },
+      data: { revokedAt: new Date() },
+    });
+    throw new UnauthorizedError('Token family compromised — re-login required');
+  }
+  const newToken = crypto.randomUUID();
+  await db.refreshToken.update({
+    where: { id: family.id },
+    data: { usedAt: new Date(), token: newToken },
+  });
+  return newToken;
+}
+```
+
+**BAD:**
+```ts
+// Stateless refresh tokens — no rotation, no revocation
+const refreshToken = jwt.sign(
+  { userId, type: 'refresh' },
+  REFRESH_SECRET,
+  { expiresIn: '30d' }
+);
+// Token lives for 30 days. No way to revoke it server-side before expiry.
+// If leaked, attacker has 30-day access. No rotation means no reuse detection.
+```
+
+**GOOD:**
+```ts
+// Password hashing with argon2id + proper parameters
+import * as argon2 from 'argon2';
+const hash = await argon2.hash(password, {
+  type: argon2.argon2id,
+  memoryCost: 65536,   // 64 MB
+  timeCost: 3,         // 3 iterations
+  parallelism: 4,
+});
+const match = await argon2.verify(hash, password);
+```
+
+**BAD:**
+```ts
+// Unsalted SHA-256 — hash collision attack, rainbow table vulnerable
+const crypto = require('crypto');
+const hash = crypto.createHash('sha256').update(password).digest('hex');
+// OWASP's most-hated pattern. No salt, no work factor, millisecond to compute.
+// All modern GPU rigs crack this at billions of hashes/second.
+```
+
 ## Quick Reference
 
 | Scenario | Action |
@@ -40,6 +115,13 @@ Authentication is the highest-stakes code you write. The breach isn't from choos
 | JWT contains `user.role`, role changes in DB, JWT still has old role | Short-lived access tokens (15 min max). Role changes take effect at next refresh. Or use opaque tokens that hit the DB. |
 | `httpOnly` cookie prevents JS theft but CSRF is still open | Add `SameSite=Strict` for same-origin requests, `SameSite=Lax` + CSRF token for cross-site safe methods. |
 | API keys in client-side code for "simplicity" | Never. API keys are server-side only. Client auth must use short-lived tokens issued by your server. |
+
+### Anti-Patterns — Reject on Sight
+- `jwt.verify(token, secret)` without checking `iss` (issuer), `aud` (audience), or `sub` (subject) claims — accepts tokens from any issuer. An attacker's signing key that signs a valid-JWT-structure can authenticate as any user. Always verify all claims relevant to your domain.
+- Refresh token stored as a JWT (stateless refresh) — prevents server-side revocation. Once a JWT refresh token is issued, there's no way to invalidate it before expiry without a blocklist (which defeats the stateless purpose). Store refresh tokens as opaque strings in a database with a `revoked` column.
+- Rate limiting by IP address only — an attacker can distribute login attempts across thousands of IPs (botnet) and bypass a per-IP limit entirely. Always rate-limit by account identifier (username/email) in addition to IP.
+- `localStorage.setItem('token', jwt)` — XSS-exposed. One compromised npm dependency with a DOM injection payload and every token on the domain is exfiltrated. Use `httpOnly` cookies.
+- Custom password hashing with MD5, SHA-1, or SHA-256 — these are designed for speed, not password storage. Modern GPUs compute billions of SHA-256 hashes per second. Use `argon2id` or `bcrypt` with cost factor >= 12.
 
 ## Red Flags
 - Password reset token that doesn't expire (or expires in 24+ hours) — 15 minutes max for password reset links

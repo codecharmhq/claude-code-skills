@@ -46,6 +46,66 @@ Use `act` to run the workflow locally, or add a step with `tmate` for SSH access
 | Debugging on `main` branch | Debug on a feature branch with workflow_dispatch trigger to avoid spamming the team |
 | Assuming runner=local environment | Check `runner.os`, available tool versions, and system dependencies explicitly |
 
+## GOOD/BAD Patterns
+
+**GOOD:**
+```yaml
+# Pin to commit SHA — immutable and auditable
+- uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+```
+
+**BAD:**
+```yaml
+# Tag reference — mutable; attacker can repoint @v4 to malicious code
+- uses: actions/checkout@v4
+```
+
+---
+
+**GOOD:**
+```yaml
+# Explicit least-privilege permissions
+permissions:
+  contents: read
+jobs:
+  deploy:
+    permissions:
+      contents: write  # only deploy job can write
+```
+
+**BAD:**
+```yaml
+# write-all — every job can push to main, delete releases, publish packages
+permissions: write-all
+```
+
+---
+
+**GOOD:**
+```yaml
+# Debug via step-level env var, not by printing the secret
+- name: Debug connection
+  run: curl -v ${{ vars.API_URL }}
+  env:
+    DEBUG: "true"
+```
+
+**BAD:**
+```yaml
+# Printing secrets to workflow logs — permanent and visible to all repo admins
+- name: Debug token
+  run: echo "Token is ${{ secrets.DEPLOY_TOKEN }}"
+```
+
+### Anti-Patterns — Reject on Sight
+
+- `continue-on-error: true` on a critical step with no `|| true` comment — silently swallows failures
+- `run: echo ${{ secrets.X }}` anywhere in the workflow — secrets printed to logs are compromised
+- `pull_request_target` without `ref: ${{ github.event.pull_request.head.sha }}` — runs workflow from base branch on untrusted PR code
+- `ubuntu-latest` without pinning — `latest` changes without notice and can break your pipeline
+- Secrets block at top of workflow instead of per-job — every step has access to every secret
+- `actions/upload-artifact@v3` used instead of `@v4` — v3 is deprecated and stopped uploading after 2025-01-30
+
 ## Red Flags
 - A step passes on re-run without any change — likely a transient network or race condition
 - "secret" or "token" in error output — never print secrets; mask them or use `::add-mask::`

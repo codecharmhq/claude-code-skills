@@ -46,6 +46,81 @@ Liveness: `/healthz` — returns 200 if the process is alive. Minimal checks onl
 | `failureThreshold: 1` on liveness | Minimum 3; one hiccup shouldn't kill a healthy pod |
 | No startup probe for JVM/ML model pods | Add startup probe with 60-120s `failureThreshold * periodSeconds` |
 
+## GOOD/BAD Patterns
+
+**GOOD:**
+```yaml
+# Separate endpoints with different failure criteria
+livenessProbe:
+  httpGet:
+    path: /healthz     # process-is-alive only
+    port: 8080
+  initialDelaySeconds: 5
+  periodSeconds: 10
+  failureThreshold: 3
+readinessProbe:
+  httpGet:
+    path: /readyz      # can-accept-traffic check
+    port: 8080
+  periodSeconds: 5
+  failureThreshold: 2
+```
+
+**BAD:**
+```yaml
+# Same endpoint for both — a DB blip restarts the pod instead of just removing traffic
+livenessProbe:
+  httpGet:
+    path: /healthz
+    port: 8080
+  failureThreshold: 1   # any hiccup = restart
+readinessProbe:
+  httpGet:
+    path: /healthz      # same endpoint, no DB check
+    port: 8080
+```
+
+---
+
+**GOOD:**
+```yaml
+# Startup probe protects slow-initializing services
+startupProbe:
+  httpGet:
+    path: /healthz
+    port: 8080
+  initialDelaySeconds: 10
+  periodSeconds: 5
+  failureThreshold: 30   # allows up to 150s for startup
+livenessProbe:
+  httpGet:
+    path: /healthz
+    port: 8080
+  periodSeconds: 10
+  failureThreshold: 3
+```
+
+**BAD:**
+```yaml
+# No startup probe — JVM/ML model pod gets killed before it finishes loading
+livenessProbe:
+  httpGet:
+    path: /healthz
+    port: 8080
+  initialDelaySeconds: 5
+  periodSeconds: 5
+  failureThreshold: 2    # max 15s total — Java not even warm yet
+```
+
+### Anti-Patterns — Reject on Sight
+
+- Liveness probe checking a database or external API — DB outage restarts every pod; cascade failure guaranteed
+- `failureThreshold: 1` on any liveness probe — a single GC pause or CPU spike triggers a full restart
+- `periodSeconds: 1` on any probe — probing at 1Hz competes with your app for CPU cluster-wide
+- Readiness probe pointing at the same URL as liveness — they serve different purposes; readiness should check dependencies
+- `initialDelaySeconds: 0` on a Java/Node/ML pod — process hasn't started listening yet; first probe fails and counts toward threshold
+- No `preStop` hook — during rolling updates, traffic hits terminating pods that are already handling SIGTERM
+
 ## Red Flags
 - Liveness probe that curls an external API — cascade failure generator
 - Readiness and liveness pointing at the same endpoint — they serve different purposes

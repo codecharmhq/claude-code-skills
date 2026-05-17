@@ -46,6 +46,91 @@ For complex auth: `def get_current_user(token) → User`, then `def get_active_o
 | DB session committed in dependency | Commit only in endpoint; dependency just provides the session |
 | `HTTPException` in non-HTTP context | WebSocket dependencies use `WebSocketException` |
 
+## GOOD/BAD Patterns
+
+**GOOD:**
+```python
+# Yield-based DB session — cleanup guaranteed after response
+async def get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()  # runs after response is sent
+```
+
+**BAD:**
+```python
+# try/finally in dependency — cleanup runs before response, not after
+def get_db():
+    db = SessionLocal()
+    try:
+        return db  # finally runs before endpoint completes
+    finally:
+        db.close()  # session closed before the endpoint reads from it
+```
+
+---
+
+**GOOD:**
+```python
+# Security() — auto-generates OpenAPI padlock in docs
+from fastapi import Security
+from fastapi.security import OAuth2PasswordBearer
+
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
+
+@app.get("/users/me")
+def get_current_user(token: str = Security(oauth2_scheme)):
+    ...
+```
+
+**BAD:**
+```python
+# Depends() for auth — docs show no padlock, no auth button
+@app.get("/users/me")
+def get_current_user(token: str = Depends(oauth2_scheme)):
+    ...
+```
+
+---
+
+**GOOD:**
+```python
+# Class-based dependency — parameterized, reusable, testable
+class RateLimiter:
+    def __init__(self, max_calls: int, window_seconds: int = 60):
+        self.max_calls = max_calls
+        self.window = window_seconds
+
+    async def __call__(self, request: Request):
+        # rate limit logic
+        pass
+
+@app.get("/api/data")
+def get_data(_: None = Depends(RateLimiter(max_calls=100))):
+    ...
+```
+
+**BAD:**
+```python
+# Module-level global — not parameterizable per-route, hard to test
+MAX_CALLS = 100
+
+async def rate_limit(request: Request):
+    # hardcoded limit for all routes
+    pass
+```
+
+### Anti-Patterns — Reject on Sight
+
+- Database commit inside a dependency — dependencies should provide the session; the endpoint decides when to commit
+- `Depends(get_db)` called at nested depth 4+ — the graph is too deep; flatten by injecting context or using `ContextVar`
+- `Depends(AuthDependency)` imported individually in 10+ route files — extract to a router-level `dependencies=[Depends(AuthDependency())]` list
+- Accessing `request.body()` inside a dependency — body stream is consumed once; use a Pydantic model instead
+- `use_cache=True` (default) on a dependency that returns a non-deterministic value (nonce, timestamp, random token) — use `use_cache=False`
+- `HTTPException` raised inside a WebSocket dependency — WebSocket connections require `WebSocketException`; `HTTPException` doesn't work
+
 ## Red Flags
 - Same dependency imported 10+ times — extract to a router-level `dependencies=[Depends(auth)]` list
 - `Depends(get_db)` called at nested depth 4 — the graph is too deep; flatten or use context variables

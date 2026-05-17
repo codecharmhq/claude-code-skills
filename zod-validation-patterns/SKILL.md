@@ -24,6 +24,118 @@ Zod's API is simple — define a schema, parse data. The complexity emerges when
 
 **Step 3: Separate coercion at the boundary, validate internally.** At the API boundary: `z.coerce.number()` for query params (they're strings), `z.coerce.date()` for ISO strings. Inside your app: `z.number()`, `z.date()`. Never use coercion in shared validation schemas — coercion is an input-layer concern. Pattern: `const InputSchema = z.object({ age: z.coerce.number().int().min(0) }); const DomainSchema = z.object({ age: z.number().int().min(0) })`. Parse with InputSchema at the route handler, validate domain logic with DomainSchema. This keeps coercion explicit and traceable.
 
+**GOOD:**
+```ts
+// Schema composition — single source of truth
+const BaseUser = z.object({
+  id: z.string().uuid(),
+  email: z.string().email(),
+});
+
+const CreateUser = BaseUser.omit({ id: true }).extend({
+  password: z.string().min(8).max(128),
+});
+
+const UpdateUser = BaseUser.partial();  // all fields optional for PATCH
+
+// Change BaseUser.email and ALL derivatives update automatically.
+```
+
+**BAD:**
+```ts
+// Copy-paste field definitions — schema drift guaranteed
+const CreateUserSchema = z.object({
+  id: z.string(),                     // forgot .uuid() — accepts "abc"
+  email: z.string().email(),
+  password: z.string().min(8),
+});
+
+const UpdateUserSchema = z.object({
+  id: z.string().uuid(),              // here .uuid() IS present — inconsistent!
+  email: z.string(),                  // forgot .email() — accepts "not-an-email"
+});
+// A field added to CreateUserSchema is never added to UpdateUserSchema.
+// Bug report: "I can create a user with email but not update it" — schema drift.
+```
+
+**GOOD:**
+```ts
+// Discriminated union for conditional validation
+const OrderSchema = z.discriminatedUnion('shippingMethod', [
+  z.object({
+    shippingMethod: z.literal('digital'),
+    email: z.string().email(),
+  }),
+  z.object({
+    shippingMethod: z.literal('physical'),
+    address: z.string().min(1),
+    city: z.string().min(1),
+    zip: z.string().regex(/^\d{5}(-\d{4})?$/),
+  }),
+]);
+
+// TypeScript narrows automatically:
+if (order.shippingMethod === 'physical') {
+  console.log(order.address);  // typed as string, not string | undefined
+}
+```
+
+**BAD:**
+```ts
+// Complex .refine() chain — unreadable, unscalable
+const OrderSchema = z.object({
+  shippingMethod: z.enum(['digital', 'physical']),
+  email: z.string().email().optional(),
+  address: z.string().optional(),
+  city: z.string().optional(),
+  zip: z.string().optional(),
+}).refine((data) => {
+  if (data.shippingMethod === 'digital' && !data.email) return false;
+  if (data.shippingMethod === 'physical' && !data.address) return false;
+  return true;
+}, { message: 'Missing required fields for shipping method' });
+// Error message: "Missing required fields for shipping method" — WHICH field?
+// Adding a 3rd shipping method means editing the refine, not adding a union variant.
+```
+
+**GOOD:**
+```ts
+// Coercion only at API boundary
+const InputSchema = z.object({
+  age: z.coerce.number().int().min(0).max(150),  // accepts "25" from query string
+  joined: z.coerce.date(),                        // accepts "2024-01-15T00:00:00Z"
+});
+
+const DomainSchema = z.object({
+  age: z.number().int().min(0).max(150),          // must be actual number
+  joined: z.date(),                                // must be actual Date
+});
+
+// Route handler: parse(queryParams, InputSchema) → coerce
+// Business logic: parse(domainData, DomainSchema) → validate
+```
+
+**BAD:**
+```ts
+// Coercion in shared schemas — hides type bugs
+const UserSchema = z.object({
+  age: z.coerce.number(),     // used for both API input AND database output
+  joined: z.coerce.date(),    // database returns Date objects, but coercion re-processes them
+});
+
+// Database returns { age: 25, joined: 2024-01-15T00:00:00Z }.
+// z.coerce.number() on a number: no-op.
+// z.coerce.date() on a Date: creates a NEW Date object — different reference, passes.
+// Now someone reads user.joined.getFullYear() — it works.
+// But someone serializes it: JSON.stringify(user) — the Date was coerced from the original Date,
+// so if the original was already a Date... actually it's fine. BUT the pattern is dangerous:
+// if you ever pass a string from an API response through the same schema, it coerces silently
+// and you lose the signal that the API changed its date format.
+const UserSchema = z.object({
+  age: z.coerce.number(),     // used for both input AND output — fragile
+});
+```
+
 ## Quick Reference
 
 | Scenario | Action |
@@ -40,6 +152,13 @@ Zod's API is simple — define a schema, parse data. The complexity emerges when
 | `z.coerce.number()` on a schema used for both input and output | Output numbers get coerced, hiding type bugs. Split InputSchema (with coercion) vs DomainSchema (no coercion). |
 | `.refine()` with async DB call inside | `.refine` runs during parse. Move async checks to `superRefine` or validate in the route handler AFTER parsing. |
 | Deeply nested `.merge()` chain that becomes un-debuggable | Flatten to named schemas. `A.merge(B).merge(C)` → `const Merged = z.object({ ...A.shape, ...B.shape, ...C.shape })` |
+
+### Anti-Patterns — Reject on Sight
+- `.transform()` applied BEFORE `.parse()` (in the same pipeline) — `z.string().transform(s => s.toUpperCase()).parse(input)` runs transform on potentially invalid data. If the input is a number, `.toUpperCase()` throws a cryptic error instead of Zod returning a structured validation error. Validate first, transform after: `.pipe()` or a chained schema.
+- `z.object({}).catchall(z.any())` in production schemas — accepts any JSON shape and silently passes everything through. This is `any` for objects. You've lost all validation at the field level. Use `.strict()` to reject unknown keys and `.catchall(z.string()...)` with a specific type if dynamic keys are required.
+- `.refine()` with an `async` function in a synchronous call — `z.string().refine(async (val) => await db.exists(val))` returns a Promise, but `.refine()` doesn't await it. The validation passes immediately because a Promise is truthy. Use `superRefine` or validate async checks separately after `parse()` completes.
+- `z.any()` used as a "temporary" schema — "I'll come back and type this later." It never happens. The field becomes an untracked data leak: any shape passes, any downstream code that assumes a type crashes at runtime. Start with a minimal shape: `z.unknown()` at least forces type narrowing in usage.
+- `safeParse` with error swallowed — `const result = schema.safeParse(input); if (result.success) { use(result.data); }` without logging the error. Silent parse failures hide schema drift between client and server. Always log `result.error` when in development.
 
 ## Red Flags
 - Single schema file with 300+ lines — extract domain schemas into `schemas/user.ts`, `schemas/order.ts`

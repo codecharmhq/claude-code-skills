@@ -24,6 +24,80 @@ Zustand won because it's API is a single function call. No providers, no reducer
 
 **Step 3: Access stores outside React via `getState` and `setState`.** Zustand stores are vanilla JS stores. `useAppStore.getState()` reads without subscribing — perfect for WebSocket handlers, event callbacks, and inter-store communication. `useAppStore.setState({ online: false })` updates from outside React without a hook. Pattern for cross-store sync: `useAuthStore.subscribe((state) => useChatStore.getState().disconnect())` — keep stores decoupled but reactive.
 
+**GOOD:**
+```ts
+// Atomic selectors with shallow comparator — minimum re-renders
+const name = useAuthStore((s) => s.user.name);                    // primitive selector
+const [name, email] = useAuthStore(                                // multi-value: shallow
+  (s) => [s.user.name, s.user.email],
+  shallow
+);
+// name changes: only this component re-renders.
+// other user fields change: this component does NOT re-render.
+```
+
+**BAD:**
+```ts
+// Full store subscription — re-renders on every single change
+const state = useAuthStore();   // no selector = subscribes to entire store
+// A chat notification unread count changes → this component re-renders.
+// The sidebar collapses → this component re-renders.
+// Dark mode toggles → this component re-renders.
+// Component only needs user.name but re-renders 50 times for unrelated updates.
+```
+
+**GOOD:**
+```ts
+// Immer middleware — mutate state directly, no spread chain
+import { immer } from 'zustand/middleware/immer';
+
+const useStore = create<State>()(
+  immer((set) => ({
+    user: { profile: { name: '', email: '' }, settings: { theme: 'light' } },
+    updateName: (name: string) =>
+      set((state) => { state.user.profile.name = name; }),  // direct mutation
+  }))
+);
+```
+
+**BAD:**
+```ts
+// Manual spread operator — deep copy boilerplate, easy to forget a level
+const useStore = create<State>((set) => ({
+  user: { profile: { name: '', email: '' }, settings: { theme: 'light' } },
+  updateName: (name: string) =>
+    set((state) => ({
+      user: {
+        ...state.user,
+        profile: { ...state.user.profile, name },
+      },
+    })),
+  // One missing spread: entire nested object is replaced.
+  // Three levels deep: 6+ lines for a single field update.
+}));
+```
+
+**GOOD:**
+```ts
+// Domain-split stores — each with clear responsibility
+const useAuthStore = create<AuthState>()(...);  // user, session, permissions
+const useFeedStore = create<FeedState>()(...);   // posts, comments, reactions
+const useUIStore = create<UIState>()(...);       // sidebar, modals, theme
+```
+
+**BAD:**
+```ts
+// Monolithic single store — 30+ unrelated properties, every component subscribes
+const useStore = create<State>((set) => ({
+  user: null, posts: [], comments: [], theme: 'light',
+  sidebarOpen: true, notifications: [], modalOpen: false,
+  selectedPostId: null, draftContent: '', online: true,
+  // 22 more unrelated properties...
+}));
+// Every component that calls useStore() re-renders when ANY property changes.
+// Finding where a property is mutated requires searching 100s of lines.
+```
+
 ## Quick Reference
 
 | Scenario | Action |
@@ -40,6 +114,13 @@ Zustand won because it's API is a single function call. No providers, no reducer
 | Creating one giant store with 30+ properties | Split by domain. Every component subscribing to the giant store re-renders on any change. |
 | `useStore()` without a selector | This subscribes to the ENTIRE store. Always pass a selector, even if it's just `(s) => s.oneThing`. |
 | Async logic in `set` without handling loading/error states | Add `status` fields: `{ data: null, loading: true, error: null }`. Let components render all 3 states. |
+
+### Anti-Patterns — Reject on Sight
+- `createStore()` (lowercase) instead of `create()` (uppercase) — `createStore` is the vanilla Zustand store without React bindings. Components calling `useStore()` from a `createStore` store will never re-render on state changes. Use `create()` from `zustand` for React stores.
+- Mutating `state` directly without `set()` — Zustand relies on `set()` to trigger subscription notifications. `store.user.name = 'new'` changes the object but no component re-renders. Always use `store.setState(...)` or the `set` function inside the store creator.
+- `persist` middleware storing the entire auth store including access tokens — localStorage is accessible to any JavaScript on the same origin (XSS). `partialize: (state) => ({ theme: state.theme, sidebarOpen: state.sidebarOpen })` — persist only non-sensitive UI preferences.
+- Store file with `any` types in selectors — `useStore((s: any) => s.user)` loses all TypeScript inference. Type the store interface with `create<StoreInterface>()` and selectors are auto-typed.
+- Three-plus stores that all `subscribe` to each other's `getState()` — implicit circular coupling. Merge interdependent stores into one bounded context, or use a lightweight event emitter for cross-store communication.
 
 ## Red Flags
 - More than 3 stores that call each other's `getState()` — you've created implicit coupling. Merge them or use a shared event bus.

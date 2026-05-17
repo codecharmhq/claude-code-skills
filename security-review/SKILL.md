@@ -45,6 +45,63 @@ Verify file upload validation, rate limiting on auth endpoints, HTTPS enforcemen
 | Security added as an afterthought | Use secure defaults; add review gate to CI pipeline |
 | Ignoring dependencies with known flaws | Scan before every deploy; automate alerts for new CVEs |
 
+## GOOD/BAD Patterns
+
+**GOOD:**
+```python
+# Parameterized query — safe from injection
+cursor.execute("SELECT * FROM users WHERE email = %s", (email,))
+```
+
+**BAD:**
+```python
+# String interpolation — SQL injection waiting to happen
+cursor.execute(f"SELECT * FROM users WHERE email = '{email}'")
+```
+
+---
+
+**GOOD:**
+```python
+# Secrets from environment — never in source
+import os
+api_key = os.environ["STRIPE_API_KEY"]
+```
+
+**BAD:**
+```python
+# Hardcoded credential — leaked the instant this hits git
+STRIPE_API_KEY = "sk_live_1a2b3c4d5e6f7g8h9i0j"
+```
+
+---
+
+**GOOD:**
+```python
+# Server-side validation with whitelist
+ALLOWED_EXTENSIONS = {"pdf", "png", "jpg"}
+if file.extension not in ALLOWED_EXTENSIONS:
+    raise HTTPException(403)
+```
+
+**BAD:**
+```python
+# Client-side validation only — trivial to bypass
+if file.extension in ALLOWED_EXTENSIONS:  # this runs in browser JS
+    upload(file)  # any extension accepted via curl
+```
+
+### Anti-Patterns — Reject on Sight
+
+- `eval()` / `exec()` on any user-supplied string — equivalent to `rm -rf /` as a service
+- `password = request.form["pw"]; hashlib.md5(password)` — unsalted, obsolete hash; reject without exception
+- `CSRFProtect(app)` with `exempt` on every POST route — you disabled the entire protection
+- `cipher = AES.new(key, AES.ECB)` — ECB mode leaks plaintext patterns; use GCM or ChaCha20-Poly1305
+- `if user.role == "admin":` in client-side code — auth check must be server-side and unreachable from the frontend
+- `assert user.is_authenticated` — asserts are stripped with `python -O`, disabling auth at runtime
+- `SECRET_KEY = "charlie-horse-battery-staple"` — hardcoded secret in source; must be env var or vault
+- NPM package with 10M+ weekly downloads used for a `leftPad` equivalent — dependency blast radius out of proportion to utility
+
 ## Red Flags
 - Any hardcoded credential in the diff
 - Endpoints that accept user input but have no validation

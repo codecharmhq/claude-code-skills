@@ -45,6 +45,83 @@ Each environment gets a separate state file (separate `.tfstate` in S3/GCS). Use
 | `count` where `for_each` is needed | `for_each` preserves identity through adds/removes; `count` shifts indices |
 | Provider config inside a module | Providers belong in root; modules inherit them |
 
+## GOOD/BAD Patterns
+
+**GOOD:**
+```hcl
+# Explicit type constraint and validation — self-documenting, fail-fast
+variable "instance_type" {
+  type        = string
+  description = "EC2 instance type for the application servers"
+
+  validation {
+    condition     = contains(["t3.medium", "t3.large", "m5.large"], var.instance_type)
+    error_message = "Only approved instance types: t3.medium, t3.large, m5.large"
+  }
+}
+```
+
+**BAD:**
+```hcl
+# No type, no validation — callers can pass anything; breaks at apply time
+variable "instance_type" {
+  default = "t3.medium"
+}
+```
+
+---
+
+**GOOD:**
+```hcl
+# for_each with stable map keys — preserves resource identity
+resource "aws_s3_bucket" "this" {
+  for_each = var.buckets  # map(string), keys are bucket names
+  bucket   = each.key
+}
+```
+
+**BAD:**
+```hcl
+# count with a list — reordering or inserting an element shifts all indices
+resource "aws_s3_bucket" "this" {
+  count  = length(var.bucket_names)
+  bucket = var.bucket_names[count.index]
+}
+```
+
+---
+
+**GOOD:**
+```hcl
+# Lookup via data source — self-healing and always current
+data "aws_vpc" "selected" {
+  tags = { Name = var.vpc_name }
+}
+resource "aws_security_group" "this" {
+  vpc_id = data.aws_vpc.selected.id
+}
+```
+
+**BAD:**
+```hcl
+# Raw ARN string — stale, unverifiable, breaks if the VPC is recreated
+variable "vpc_id" {
+  type = string
+}
+resource "aws_security_group" "this" {
+  vpc_id = var.vpc_id
+}
+```
+
+### Anti-Patterns — Reject on Sight
+
+- `depends_on` used on every resource — dependencies should be implicit via attribute references; explicit `depends_on` everywhere means the graph is wrong
+- `provider` block inside a module — providers belong in root modules; embedding them makes the module non-composable
+- `count` with `element()` on a list that can be reordered — index shifts cause every resource to be recreated
+- `terraform.tfvars` with hardcoded secrets committed to git — `.gitignore` tfvars files; use CI secrets or Vault
+- 40+ variables with no defaults — the module is a monolith; split it into focused sub-modules
+- `terraform destroy` without `-target` or `plan -destroy` first — unrecoverable if something unexpected is deleted
+
 ## Red Flags
 - `terraform destroy` without a plan first — always `terraform plan -destroy -out=plan.tfplan`
 - State file not encrypted — S3: enable SSE; GCS: default encryption is on but verify

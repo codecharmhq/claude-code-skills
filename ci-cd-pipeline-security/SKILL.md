@@ -46,6 +46,70 @@ Pin actions to a full commit SHA: `uses: actions/checkout@11bd719...` NOT `@v4` 
 | `pull_request_target` without `ref: ${{ github.event.pull_request.head.sha }}` | Default checkout is the BASE branch — your tests run against merged code, not the PR |
 | Secrets passed to forked PR workflows | `pull_request` from forks does NOT have access to secrets by default — that's correct |
 
+## GOOD/BAD Patterns
+
+**GOOD:**
+```yaml
+# Per-workflow and per-job least privilege
+permissions:
+  contents: read
+jobs:
+  deploy:
+    permissions:
+      contents: write  # only this job can push
+      id-token: write   # needed for OIDC
+```
+
+**BAD:**
+```yaml
+# write-all — every job inherits full repo access
+permissions: write-all
+```
+
+---
+
+**GOOD:**
+```yaml
+# OIDC-based cloud auth — no static secrets, auto-expiring credentials
+- name: Configure AWS credentials
+  uses: aws-actions/configure-aws-credentials@e3e6ae9
+  with:
+    role-to-assume: arn:aws:iam::123456:role/github-oidc-role
+    aws-region: us-east-1
+```
+
+**BAD:**
+```yaml
+# Static cloud keys in repo secrets — breach leaks permanent credentials
+- name: Configure AWS credentials
+  env:
+    AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY }}
+    AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_KEY }}
+  run: aws s3 sync ...
+```
+
+---
+
+**GOOD:**
+```yaml
+- uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+```
+
+**BAD:**
+```yaml
+- uses: actions/checkout@v4     # mutable tag — can be repointed
+- uses: some-org/unverified-action@master  # auto-updates — supply chain risk
+```
+
+### Anti-Patterns — Reject on Sight
+
+- `GITHUB_TOKEN` with `write-all` on any workflow — replace with `permissions: {}` (nothing) and grant per-job
+- Secrets dumped into an `env:` block at workflow top — every step sees every secret; scope them per-step
+- `pull_request` workflow that accesses secrets — PRs from forks must not receive secrets; use `pull_request_target` with explicit ref checkout only
+- Any action referenced by a two-segment tag (`@v1`, `@v2`, `@master`) — mutable references are a tag-repointing attack vector
+- `run: echo "${{ secrets.X }}"` or any action that prints `${{ secrets }}` in its output — secrets are compromised the instant they appear in logs
+- `npm publish` in a workflow without `provenance` flag — no attestation; anyone can publish a compromised package to that version
+
 ## Red Flags
 - Workflow with `issues: write, pull-requests: write, contents: write` — can a single job really need all three?
 - Action referenced by tag (`@v2`) or branch (`@master`) — attack surface for tag repointing

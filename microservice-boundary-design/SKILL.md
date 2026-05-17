@@ -45,6 +45,92 @@ For extraction: route traffic to the new service incrementally. Start with reads
 | Entity IDs as integration contracts | Use natural keys or opaque IDs; entity IDs couple consumers to internal schema |
 | No dead letter queue for events | Undeliverable events must land somewhere for human inspection |
 
+## GOOD/BAD Patterns
+
+**GOOD:**
+```python
+# Service owns its data — other services call its API
+class OrderService:
+    def create_order(self, items: list[Item]) -> Order:
+        # owns the orders DB exclusively
+        return self.repo.save(Order(items=items))
+
+class BillingService:
+    def bill_for_order(self, user_id: str, order: OrderDTO) -> Invoice:
+        # calls OrderService API, does NOT touch orders DB
+        return self.invoice_repo.save(Invoice(user_id, order.total))
+```
+
+**BAD:**
+```python
+# Shared database — both services read/write the same table
+class OrderService:
+    def create_order(self, items):
+        db.execute("INSERT INTO orders ...")  # OrderService writes orders
+
+class BillingService:
+    def bill_for_order(self, user_id, order_id):
+        db.execute("UPDATE orders SET billed=true ...")  # BillingService also writes orders
+```
+
+---
+
+**GOOD:**
+```python
+# Async event for cross-service notification
+class OrderService:
+    def confirm(self, order_id: str):
+        self.repo.save(Order(id=order_id, status="confirmed"))
+        self.event_bus.publish("order.confirmed", OrderConfirmedEvent(order_id=order_id))
+
+# ShippingService subscribes — decoupled, independent deploy
+class ShippingService:
+    @event_handler("order.confirmed")
+    def on_order_confirmed(self, event: OrderConfirmedEvent):
+        self.create_shipment(event.order_id)
+```
+
+**BAD:**
+```python
+# Sync chain A -> B -> C -> D — one slowdown cascades
+class OrderService:
+    def confirm(self, order_id: str):
+        self.repo.save(...)
+        self.billing.charge(order_id)         # calls BillingService
+        self.shipping.create(order_id)        # calls ShippingService
+        self.notification.send(order_id)      # calls NotificationService
+```
+
+---
+
+**GOOD:**
+```python
+@dataclass
+class OrderConfirmedEvent:
+    event_id: str       # opaque event ID
+    order_id: str       # opaque order ID
+    total_amount_cents: int
+    occurred_at: datetime
+```
+
+**BAD:**
+```python
+@dataclass
+class OrderConfirmedEvent:
+    user_id: int        # coupled to Users table PK
+    order_id: int       # coupled to Orders table auto-increment PK
+    # entity-level IDs leak internal schema to consumers
+```
+
+### Anti-Patterns — Reject on Sight
+
+- "User Service" owning everything related to users (auth, profile, settings, notifications, billing) — that's a monolith exposed over HTTP, not a bounded context
+- Shared database table between two services — "just one more shared table" is how distributed monoliths are born
+- Service with exactly 2 endpoints — too small; it's a function, not a service; merge it into a related context
+- Synchronous call chain that spans 3+ services (A calls B calls C) — one slowdown cascades; use async events or a BFF
+- Event schema that only adds fields and never removes or deprecates old ones — events are contracts; version them with backward-compatible additions only
+- Dead letter queue that nobody monitors — undeliverable events pile up silently; set up alerts on DLQ depth
+
 ## Red Flags
 - Feature that touches 5 services and takes 3 sprints — boundaries are wrong
 - "Just one more shared table" — every shared table is future coordination overhead

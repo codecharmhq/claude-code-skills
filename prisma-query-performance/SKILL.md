@@ -24,6 +24,77 @@ Prisma's convenience has a cost: nested `include` generates N+1 queries by defau
 
 **Step 3: Tune the connection pool for serverless vs long-running servers.** Serverless (Lambda, Vercel): set `connection_limit: 1` — cold starts don't need pools. Long-running servers: `connection_limit = (num_connections * 2) / num_instances`, with a hard cap at `pg_max_connections - 10`. Set `pool_timeout: 10` (seconds) — fail fast when the pool is exhausted. Never use `connection_limit: 100` in serverless; each Lambda invocation creates its own pool.
 
+**GOOD:**
+```ts
+// relationLoadStrategy: 'join' — single LEFT JOIN query instead of N+1
+const user = await prisma.user.findUnique({
+  where: { id: userId },
+  include: { posts: true, profile: true },
+  relationLoadStrategy: 'join',  // Prisma 5+ — 1 query via LEFT JOIN
+});
+// One SQL statement: SELECT users.*, posts.*, profiles.* FROM users
+// LEFT JOIN posts ON ... LEFT JOIN profiles ON ... WHERE users.id = ?
+```
+
+**BAD:**
+```ts
+// Deeply nested includes — each nesting level adds a separate query
+const user = await prisma.user.findUnique({
+  where: { id: userId },
+  include: {
+    posts: {
+      include: {
+        comments: {
+          include: { author: true },   // 4th level = 4+ queries
+        },
+      },
+    },
+  },
+});
+// 1 (user) + N (posts) + N*M (comments) + N*M*K (authors) = 50+ queries for 3 users
+// SQL log shows identical SELECT patterns repeating endlessly.
+```
+
+**GOOD:**
+```ts
+// $queryRaw for aggregate/reporting queries — one efficient query
+const stats = await prisma.$queryRaw<PostStats[]>`
+  SELECT
+    status,
+    COUNT(*)::int AS count,
+    AVG(length(content))::float AS avg_length
+  FROM posts
+  GROUP BY status
+  ORDER BY count DESC
+`;
+```
+
+**BAD:**
+```ts
+// Prisma groupBy for complex aggregates — generates multiple subqueries
+const stats = await prisma.posts.groupBy({
+  by: ['status'],
+  _count: { id: true },
+  _avg: { content: true },    // AVG on text field? Error at best, expensive at worst
+});
+// Prisma translates this into: SELECT status, COUNT(*) ... 
+//   plus: SELECT status, AVG(...) ...  — separate subquery per aggregate
+```
+
+**GOOD:**
+```ts
+// Serverless connection limit — one connection per invocation
+DATABASE_URL="postgresql://user:pass@host:5432/db?connection_limit=1&pool_timeout=10"
+```
+
+**BAD:**
+```ts
+// Serverless with connection_limit: 100 — connection pool explosion
+DATABASE_URL="postgresql://user:pass@host:5432/db?connection_limit=100"
+// 50 concurrent Lambda invocations × 100 connections = 5000 connections
+// Database max_connections is probably 100-200. Everything fails.
+```
+
 ## Quick Reference
 
 | Scenario | Action |
@@ -40,6 +111,13 @@ Prisma's convenience has a cost: nested `include` generates N+1 queries by defau
 | Wrapping every mutation in `$transaction` because "it's safer" | `$transaction` uses serializable isolation. For independent writes, use batch transactions or drop the wrapper. |
 | `include` on `findMany({ where: { ... }, include: { posts: { include: { comments: true } } } })` expecting one query | Prisma's default `relationLoadStrategy: 'query'` sends one query per include level. Use `join` for simple cases. |
 | `DATABASE_URL` with `?connection_limit=100` in serverless | Each invocation opens up to 100 connections to a pool that dies in 10s. Use `connection_limit: 1`. |
+
+### Anti-Patterns — Reject on Sight
+- `findMany` followed by `.map(item => prisma.related.findFirst(...))` in application code — classic N+1 in disguise. Instead of nested `include` (which Prisma may batch poorly for complex shapes), batch-fetch all related IDs in a single `findMany` query, then join in application memory.
+- `$transaction([readQuery1, readQuery2, readQuery3])` wrapping unrelated reads — Prisma's `$transaction` uses serializable isolation by default. Reading three unrelated tables inside a serializable transaction adds locking overhead and increases contention for zero benefit. Use `$transaction` only for writes that need atomicity.
+- `SELECT *` in `$queryRaw` — if you're going to the trouble of writing raw SQL for performance, specify columns. `SELECT *` defeats the purpose: you fetch bytes the app never uses, and Prisma can't type the result reliably.
+- `connect` vs `connectOrCreate` confusion — `prisma.post.update({ where: { id }, data: { author: { connect: { id: authorId } } } })` throws if `authorId` doesn't exist. Use `connectOrCreate` when the related record might not exist.
+- `upsert` without a unique constraint — Prisma `upsert` requires a `where` clause with a unique field. Passing only non-unique fields throws `P2025: Record to upsert not found`.
 
 ## Red Flags
 - Log output showing identical SELECT patterns repeating 20+ times in a single request — classic N+1 from nested includes

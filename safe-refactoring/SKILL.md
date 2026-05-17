@@ -46,6 +46,85 @@ Run tests after every single refactoring step. If tests fail, the step was not a
 | Manually retyping instead of IDE refactor | IDEs have refactoring engines that preserve semantics; trust them |
 | Refactoring the whole codebase at once | Scope to the code needed for the next feature; leave the rest |
 
+## GOOD/BAD Patterns
+
+**GOOD:**
+```typescript
+// Extract function: one clear name, one responsibility
+function calculateDiscountedPrice(basePrice: number, coupon: Coupon): number {
+  if (!coupon.isValid()) return basePrice
+  return applyDiscount(basePrice, coupon.discountRate)
+}
+```
+
+**BAD:**
+```typescript
+// 80-line function with inline logic and comments explaining blocks — the comment IS the function name
+function processOrder(order: Order): number {
+  // calculate discount
+  let price = order.total
+  if (order.coupon && order.coupon.expiresAt > Date.now()) {
+    price = price * (1 - order.coupon.discountRate)
+    // apply tax ... and so on for 60 more lines
+  }
+  // ...
+}
+```
+
+---
+
+**GOOD:**
+```python
+# Guard clause — early return reduces nesting
+def process_payment(invoice):
+    if not invoice.is_payable:
+        return None
+    if invoice.amount <= 0:
+        return None
+    # main logic at column 0
+    return charge(invoice)
+```
+
+**BAD:**
+```python
+# Deeply nested conditional — every branch is a bug farm
+def process_payment(invoice):
+    if invoice.is_payable:
+        if invoice.amount > 0:
+            # main logic at column 8
+            return charge(invoice)
+    return None
+```
+
+---
+
+**GOOD:**
+```typescript
+// Characterization test — locks current behavior before refactoring
+describe("legacyRenderer", () => {
+  it("matches current output", () => {
+    expect(renderFullPage({ user: "test" })).toMatchSnapshot()
+  })
+})
+```
+
+**BAD:**
+```typescript
+// No test coverage — "I'll add tests after refactoring" always means "I'll never add tests"
+describe("legacyRenderer", () => {
+  // TODO: add tests after refactoring
+})
+```
+
+### Anti-Patterns — Reject on Sight
+
+- Manual find-and-replace to rename a symbol — breaks references the IDE would have updated; use IDE rename (F2) or a codemod
+- "Refactoring + feature" in a single commit message or PR title — split immediately; behavior changes must be isolated from structural changes
+- `// TODO: add tests after` in a refactoring PR — tests must exist before refactoring or the refactoring doesn't happen
+- Commit titled `cleanup` or `refactor stuff` — if you can't name the exact mechanical transformation, you weren't refactoring
+- Any refactoring that touches 50+ files in one commit — too large to review; break into one transformation per commit
+- "I just changed it a little bit" without running tests — "a little bit" is where regressions hide
+
 ## Red Flags
 - PR title: "Refactoring + feature" — split immediately; these must be separate PRs
 - Refactoring commit that changes behavior "just a little" — it's not a refactor, it's a feature with extra risk
