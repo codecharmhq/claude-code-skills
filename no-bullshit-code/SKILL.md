@@ -49,6 +49,62 @@ LLMs have three failure modes that waste hours: fabricating APIs that don't exis
 | Wrapping a 10-line fetch in a class with dependency injection | A function is sufficient until you have 3+ callers with different needs. |
 | `try { ... } catch (e) { console.log(e) }` | Either handle the error (retry, fallback, user message) or let it propagate. Swallowing errors hides bugs. |
 
+## GOOD/BAD Patterns
+
+**GOOD:**
+```typescript
+// Direct, verified import — one file, one function, zero abstractions
+import { Redis } from 'ioredis';  // verified: npm view ioredis exports Redis
+
+async function getUser(id: string) {
+  const cached = await redis.get(`user:${id}`);
+  if (cached) return JSON.parse(cached);
+  const user = await db.query('SELECT * FROM users WHERE id = $1', [id]);
+  if (user) await redis.set(`user:${id}`, JSON.stringify(user), 'EX', 300);
+  return user;
+}
+```
+
+**BAD:**
+```typescript
+// Fabricated import + 3 layers of abstraction for a cache lookup
+import { CacheManager } from 'redis-orm-cache';  // package doesn't exist
+
+abstract class AbstractCacheProvider<T> {
+  abstract get(key: string): Promise<T | null>;
+  abstract set(key: string, value: T, ttl: number): Promise<void>;
+}
+class RedisCacheProvider<T> extends AbstractCacheProvider<T> {
+  constructor(private readonly cacheManager: CacheManager) { super(); }
+  async get(key: string) { return this.cacheManager.fetch(key); }
+  async set(key: string, value: T, ttl: number) { await this.cacheManager.store(key, value, ttl); }
+}
+```
+
+---
+
+**GOOD:**
+```typescript
+// useEffect with cleanup — no memory leak, no race condition
+useEffect(() => {
+  const controller = new AbortController();
+  let ignore = false;
+  fetch('/api/user', { signal: controller.signal })
+    .then(r => r.json())
+    .then(data => { if (!ignore) setUser(data); })
+    .catch(err => { if (err.name !== 'AbortError') setError(err); });
+  return () => { ignore = true; controller.abort(); };
+}, []);
+```
+
+**BAD:**
+```typescript
+// No cleanup, no error handling, races on every render
+useEffect(() => {
+  fetch('/api/user').then(r => r.json()).then(setUser);
+}, []);
+```
+
 ## Anti-Patterns — Reject on Sight
 
 - `class AbstractBaseRepository<T>` for a single database table — concrete function, not generic abstraction

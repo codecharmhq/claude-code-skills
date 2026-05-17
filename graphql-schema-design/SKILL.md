@@ -46,9 +46,86 @@ Every resolver that fetches related data must use DataLoader. Batch function: re
 | `[Type!]!` (non-null list of non-null items) | Use `[Type!]` — allow empty lists; null items break fewer clients |
 | Versioning with `/v2/graphql` | Evolve the schema; deprecate fields, never fork the endpoint |
 
+## GOOD/BAD Patterns
+
+**GOOD:**
+```graphql
+# Domain-driven types — one User type, fields from multiple tables
+type User {
+  id: ID!
+  email: String!
+  profile: Profile          # separate table, same type
+  orders(first: Int!, after: String): OrderConnection!  # paginated
+}
+```
+
+**BAD:**
+```graphql
+# Table-per-type — exposes database structure, leaks internals
+type UserTable {
+  user_id: Int!
+  user_email: String!
+  user_password_hash: String!  # security leak
+  user_bio: String
+}
+```
+
+---
+
+**GOOD:**
+```typescript
+// One DataLoader per request — batched query, 2 DB calls for 100 posts
+const userLoader = new DataLoader(async (ids: readonly string[]) => {
+  const users = await db.users.findMany({ where: { id: { in: [...ids] } } });
+  const userMap = new Map(users.map(u => [u.id, u]));
+  return ids.map(id => userMap.get(id) || null);
+});
+const resolvers = {
+  Post: { author: (post) => userLoader.load(post.authorId) },
+};
+```
+
+**BAD:**
+```typescript
+// Per-item DB call — 101 queries for 100 posts (1 for posts + 100 per author)
+const resolvers = {
+  Post: { author: (post) => db.users.findOne({ where: { id: post.authorId } }) },
+};
+```
+
+---
+
+**GOOD:**
+```graphql
+# Mutation returns a payload type — room for errors and partial success
+type CreateUserPayload {
+  user: User
+  errors: [UserError!]!
+}
+type UserError {
+  field: String!
+  message: String!
+}
+```
+
+**BAD:**
+```graphql
+# Mutation returns raw type — no place for validation errors
+type Mutation {
+  createUser(email: String!, name: String!): User!
+}
+```
+
+### Anti-Patterns — GraphQL Schema Failures
+- `type Query { user(id: ID!): User }` with non-null return type — if user doesn't exist, the field errors with no data; return nullable `User`
+- Exposing DB auto-increment IDs as the only `id` — clients hardcode them, then collide across environments; use opaque `ID!` with `toGlobalId()`
+- `[Order!]!` (non-null list of non-null items) — an empty list that happens to be null crashes the entire query; prefer `[Order!]` everywhere
+- 50+ top-level Query fields — impossible to deprecate or refactor; group under domain types: `query { users { search, byId }, posts { feed, byTag } }`
+
 ## Red Flags
 - Resolver with a raw SQL query or HTTP call that runs per-list-item — batch it with DataLoader
 - `@deprecated` fields older than 6 months — remove them and bump the version
 - Type with 30+ fields and no sub-types — the type is doing too much; decompose it
+- Every mutation returns the raw entity type — no place for validation errors or partial success
 
 **A GraphQL resolver that makes an outbound call without DataLoader is a performance incident waiting to happen.**
