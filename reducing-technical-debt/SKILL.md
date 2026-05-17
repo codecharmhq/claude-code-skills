@@ -1,55 +1,53 @@
 ---
 name: reducing-technical-debt
-description: Use when codebase has accumulated technical debt, when planning debt reduction work, or when choosing between quick fix and proper solution
+description: Use when codebase velocity is dropping, every feature requires untangling legacy code first, or when making the business case for dedicated cleanup work
 ---
 
 # Reducing Technical Debt
 
 ## Overview
-Technical debt is the future cost of taking shortcuts now. Systematic reduction requires identifying, prioritizing, and steadily paying down debt while preventing new accumulation.
+Technical debt isn't "bad code" — it's code that made sense at the time but now costs more than it delivers. The difference between a rewrite and a cleanup is whether you can ship while fixing. Reduce debt in place, in production, one capability at a time.
 
 ## When to Use
-- Adding a simple feature takes longer than expected
-- Bug fixes frequently regress other areas
-- Teams fear touching certain modules
-- Onboarding new developers is painfully slow
+- A feature that should take 2 days consistently takes 2 weeks
+- The same 3 files are touched in every pull request
+- New hires take 3+ months to become productive
+- Bug fixes in one area regularly break another
 
-**Don't use when:**
-- The codebase is scheduled for replacement within weeks
-- Business is in crisis mode requiring all hands on deliveries
+**Don't use when:** the codebase is being replaced within 6 months. Don't refactor just because the style bothers you — measure the actual cost first.
 
 ## Core Workflow
 
-### Step 1: Identify and Classify
-Catalog debt into types: code debt (complexity, duplication), design debt (poor architecture), test debt (low coverage), documentation debt (stale docs), dependency debt (outdated libraries). Tag each with estimated impact.
+### Step 1: Measure Debt, Don't Feel It
+Extract data, not opinions. Run `scc` or `cloc` to find files with extreme complexity-to-line ratios. Run `git log --since="6 months" --format="%H" -- <file>` to find churn hotspots — files changed in 80% of PRs are debt clusters. Calculate: time spent per file / total development time. Present to stakeholders in dollars, not abstractions: "This 2000-line file costs us $X/month in slowdown."
 
-### Step 2: Prioritize with Impact vs Effort
-Plot debt items on a 2x2 matrix. Attack high-impact, low-effort items first. These deliver immediate velocity improvement.
+### Step 2: Apply the Strangler Fig, Not the Rewrite
+Never stop-the-world rewrite. Extract one capability at a time from the debt cluster into a clean module. Route existing callers to the new module. Delete the old code only after all callers migrate. Ship each extraction independently. If the extraction breaks something, roll it back without affecting other extractions.
 
-### Step 3: Schedule and Execute
-Dedicate 10-20% of each sprint to debt reduction, or run focused cleanup sprints. Use the boy scout rule: always leave code slightly better than you found it.
+### Step 3: Automate Prevention
+Add lint rules that fail CI on the specific anti-patterns you just cleaned up. Set complexity thresholds: any function with cyclomatic complexity > 15 fails the build. Use `eslint-plugin-complexity`, `radon` (Python), or `gocognit` (Go). Without automation, the debt returns within 3 sprints. The cleanup isn't done until the linter enforces it.
 
 ## Quick Reference
 
-| Scenario | Action |
-|----------|--------|
-| Frequently touched messy code | Refactor incrementally each visit |
-| Outdated dependencies | Schedule upgrade sprint quarterly |
-| Untested critical path | Add tests alongside feature work |
-| Business asks "why slow down?" | Calculate time lost to debt in dev-hours |
+| Symptom | Action |
+|---------|--------|
+| File changed in 80% of PRs | Extract one responsibility; strangler-fig the callers |
+| "Don't touch X, nobody understands it" | Characterization tests first, then extract |
+| Same bug fixed 3 times in 6 months | The root abstraction is wrong — redesign the interface |
+| CI takes 40+ minutes | Parallelize by extracting independently-testable modules |
 
 ## Common Mistakes
 
 | Mistake | Fix |
 |---------|-----|
-| Trying to fix all debt at once | Prioritize by impact, not visibility |
-| No tracking system | Maintain a tech debt register in your project tracker |
-| Taking on debt without recording it | Document intentional debt with a repayment plan and date |
+| Big-bang rewrite while the old system still runs | Strangler fig: extract and switch one capability at a time |
+| "Cleanup" branch that lives for 3 weeks | Max 2 days per extraction; merge to main behind a flag |
+| No metric before starting | Measure cost in time/$ before; measure again after; report the delta |
+| Cleaning code that nobody touches | Fix code that costs you now, not code that looks ugly |
 
 ## Red Flags
-- Teams avoid touching certain files or modules
-- Estimates are wildly inconsistent for similar work
-- "Quick fix" is a permanent state, not an exception
-- No one remembers why a workaround exists
+- "We'll clean it up after the release" said 3 releases in a row — debt is accumulating, not being paid
+- Feature velocity declining quarter over quarter — debt is now a business problem, not an engineering preference
+- More than 30% of sprint capacity goes to unplanned "bug fixes" — the bugs ARE the debt manifesting
 
-**All of these mean: a debt problem has moved from "annoying" to "blocking" — treat reduction as a feature.**
+**Technical debt that doesn't show up in velocity metrics is cosmetic. Fix what actually slows you down, not what offends you aesthetically.**
